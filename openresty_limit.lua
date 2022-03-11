@@ -19,28 +19,25 @@ local function wait()
    ngx.sleep(1)
 end
 
-
+-- 加载并配置redis -- 
 local redis = require "resty.redis"
 local red = redis:new()
 red:set_timeout(1000)
-
 -- ip
 local ip = "127.0.0.1"
 -- 端口
 local port = 6379
 -- 连接
 local ok, err = red:connect(ip,port)
--- 密码认证(没有的可以不用)
--- red:auth("*******");
+-- 密码认证(没有密码的可以注释掉)
+red:auth("******");
 -- 选择库
-red:select(20);
+red:select(0);
 if not ok then
     return close_redis(red)
 end
 
-local uri = ngx.var.uri -- 获取当前请求的uri
-local uriKey = "req:uri:"..uri
-
+-- 防刷功能 -- 
 -- ngx.req.get_headers: 获取头信息
 -- ngx.var.remote_addr: 获取真实ip
 local clientIP = ngx.req.get_headers()["X-Real-IP"]
@@ -64,7 +61,6 @@ if tonumber(is_block) == 1 then
    return close_redis(red)
 end
 
-
 -- 自增, 没有就初始化为0在自增
 res, err = red:incr(incrKey)
 if res == 1 then
@@ -72,14 +68,28 @@ if res == 1 then
    expire_res, err = red:expire(incrKey,1)
 end
 
-if res > 200 then
+-- 获取每秒最高访问次数
+local limit_max_num,err = red:get('limit_max_num')
+if (limit_max_num == nil or limit_max_num == '' or limit_max_num == ngx.null) then
+    limit_max_num = 200
+end
+
+if res > tonumber(limit_max_num) then
     -- 设置阻塞
     res, err = red:set(blockKey,1)
     -- expire: 设置阻塞过期时间
     res, err = red:expire(blockKey,600)
 end
 
+-- 限流功能 -- 
+local uri = ngx.var.uri -- 获取当前请求的uri
+local uriKey = "req:uri:"..uri
 
+-- 获取限流临界值
+local limit_flow_num = red:get('limit_flow_num');
+if (limit_flow_num == nil or limit_flow_num == '' or limit_flow_num == ngx.null) then
+    limit_flow_num = 10
+end
 -- 根据uri记录请求次数
 --[[
 -- 自增
@@ -89,10 +99,9 @@ if res == 1 then
 end
 return (res)
 ]]--
--- red:incr("test1");
 res, err = red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,uriKey,1)
--- 超过10次等待处理请求
-while (res > 10)
+-- 超过限流次等待处理请求
+while (res > tonumber(limit_flow_num))
 do
    -- red:incr("test");
    -- ngx.thread.spawn: 再生协程
